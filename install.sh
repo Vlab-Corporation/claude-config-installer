@@ -10,6 +10,8 @@
 #   --verbose, -v        Show detailed output
 #   --dry-run            Preview changes without modifying files
 #   --preserve-agents    Skip agents/ directory
+#   --with-agents        Install optional TDD agents
+#   --no-agents          Skip TDD agents without prompting
 #   --uninstall          Remove SuperClaude files
 #   --clean-all          Remove everything including backups (with --uninstall)
 #   --list-files         Show all managed files
