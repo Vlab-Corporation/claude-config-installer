@@ -333,3 +333,250 @@ class TestDryRun:
 
     def test_install_returns_true(self, dry_run_installer):
         assert dry_run_installer.install() is True
+
+
+# =============================================================================
+# Unmerge Settings
+# =============================================================================
+
+class TestUnmergeSettings:
+    """Test unmerge_settings() — reverse of merge_settings."""
+
+    def test_removes_superclaude_hooks(self, installer_instance, patched_paths):
+        # Arrange: install settings, then unmerge
+        claude_dir = patched_paths["claude_dir"]
+        settings_path = claude_dir / "settings.json"
+
+        installer_instance.merge_settings()
+        assert settings_path.exists()
+
+        # Act
+        installer_instance.unmerge_settings()
+
+        # Assert: SC hooks removed, file should be gone or empty
+        if settings_path.exists():
+            data = json.loads(settings_path.read_text())
+            for event_hooks in data.get("hooks", {}).values():
+                for hook_group in event_hooks:
+                    for hook in hook_group.get("hooks", []):
+                        cmd = hook.get("command", "")
+                        assert "queue-session-start" not in cmd
+                        assert "queue-auto-execute" not in cmd
+
+    def test_preserves_user_hooks(self, installer_instance, patched_paths, mock_settings_file):
+        # Arrange: merge SC settings into user settings
+        installer_instance.merge_settings()
+
+        # Act
+        installer_instance.unmerge_settings()
+
+        # Assert: user custom hook should survive
+        settings_path = patched_paths["claude_dir"] / "settings.json"
+        assert settings_path.exists()
+        data = json.loads(settings_path.read_text())
+        assert "hooks" in data
+        session_hooks = data["hooks"].get("SessionStart", [])
+        custom_commands = []
+        for hg in session_hooks:
+            for h in hg.get("hooks", []):
+                custom_commands.append(h.get("command", ""))
+        assert "$HOME/.claude/hooks/custom-hook.sh" in custom_commands
+
+    def test_preserves_permissions(self, installer_instance, patched_paths, mock_settings_file):
+        installer_instance.merge_settings()
+        installer_instance.unmerge_settings()
+
+        settings_path = patched_paths["claude_dir"] / "settings.json"
+        data = json.loads(settings_path.read_text())
+        assert "permissions" in data
+        assert data["permissions"]["allow"] == ["/usr/local/bin/npm"]
+
+    def test_preserves_custom_keys(self, installer_instance, patched_paths, mock_settings_file):
+        installer_instance.merge_settings()
+        installer_instance.unmerge_settings()
+
+        settings_path = patched_paths["claude_dir"] / "settings.json"
+        data = json.loads(settings_path.read_text())
+        assert data.get("customSetting") == "user-value"
+
+    def test_removes_superclaude_only_keys(self, installer_instance, patched_paths):
+        # Arrange: fresh install (no pre-existing settings)
+        claude_dir = patched_paths["claude_dir"]
+        settings_path = claude_dir / "settings.json"
+        if settings_path.exists():
+            settings_path.unlink()
+
+        installer_instance.merge_settings()
+
+        # Act
+        installer_instance.unmerge_settings()
+
+        # Assert: file deleted when only SC content
+        assert not settings_path.exists()
+
+    def test_handles_missing_settings_file(self, installer_instance, patched_paths):
+        claude_dir = patched_paths["claude_dir"]
+        settings_path = claude_dir / "settings.json"
+        if settings_path.exists():
+            settings_path.unlink()
+
+        # Should not raise
+        installer_instance.unmerge_settings()
+
+    def test_dry_run_does_not_modify(self, dry_run_installer, patched_paths):
+        claude_dir = patched_paths["claude_dir"]
+        settings_path = claude_dir / "settings.json"
+        original = json.dumps({"alwaysThinkingEnabled": True, "hooks": {}}, indent=2)
+        settings_path.write_text(original)
+
+        dry_run_installer.unmerge_settings()
+
+        assert settings_path.read_text() == original
+
+
+# =============================================================================
+# Uninstall Backup
+# =============================================================================
+
+class TestUninstallBackup:
+    """Test backup creation before uninstall."""
+
+    def test_creates_backup_before_uninstall(self, installer_instance, patched_paths):
+        installer_instance.install_files()
+        installer_instance.merge_settings()
+
+        installer_instance.uninstall()
+
+        # Check backup was created with uninstall prefix
+        backups_dir = patched_paths["claude_dir"] / "backups"
+        backup_dirs = [d for d in backups_dir.iterdir() if d.name.startswith("superclaude_uninstall_")]
+        assert len(backup_dirs) == 1
+
+    def test_backup_contains_removed_files(self, installer_instance, patched_paths):
+        installer_instance.install_files()
+        installer_instance.merge_settings()
+
+        installer_instance.uninstall()
+
+        backups_dir = patched_paths["claude_dir"] / "backups"
+        backup_dirs = [d for d in backups_dir.iterdir() if d.name.startswith("superclaude_uninstall_")]
+        assert len(backup_dirs) == 1
+        backup_dir = backup_dirs[0]
+
+        # At least some key files should be in backup
+        assert (backup_dir / "CLAUDE.md").exists()
+        assert (backup_dir / "FLAGS.md").exists()
+
+
+# =============================================================================
+# Uninstall Preserve Agents
+# =============================================================================
+
+class TestUninstallPreserveAgents:
+    """Test --preserve-agents in uninstall."""
+
+    def test_agents_preserved_when_flag_set(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        # Install everything
+        installer = Installer(verbose=True)
+        installer.install()
+        assert (claude_dir / "agents" / "developer.md").exists()
+
+        # Uninstall with preserve_agents
+        uninstaller = Installer(verbose=True, preserve_agents=True)
+        uninstaller.uninstall()
+
+        # Agent files should survive
+        assert (claude_dir / "agents" / "developer.md").exists()
+        assert (claude_dir / "agents" / "backend-architect.md").exists()
+
+    def test_agents_removed_when_flag_not_set(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        installer = Installer(verbose=True)
+        installer.install()
+
+        uninstaller = Installer(verbose=True, preserve_agents=False)
+        uninstaller.uninstall()
+
+        assert not (claude_dir / "agents" / "developer.md").exists()
+
+    def test_non_agent_files_still_removed(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        installer = Installer(verbose=True)
+        installer.install()
+
+        uninstaller = Installer(verbose=True, preserve_agents=True)
+        uninstaller.uninstall()
+
+        # Non-agent files should be removed
+        assert not (claude_dir / "FLAGS.md").exists()
+        assert not (claude_dir / "commands" / "sc" / "agent.md").exists()
+
+
+# =============================================================================
+# Uninstall Runtime Dirs
+# =============================================================================
+
+class TestUninstallRuntimeDirs:
+    """Test runtime directory cleanup during uninstall."""
+
+    def test_empty_queue_dir_removed_by_default(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+        installer = Installer(verbose=True)
+        installer.install()
+
+        # queue/ should be empty
+        assert (claude_dir / "queue").is_dir()
+
+        installer.uninstall()
+        assert not (claude_dir / "queue").exists()
+
+    def test_backups_dir_preserved_by_default(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+        installer = Installer(verbose=True)
+        installer.install()
+        installer.uninstall()
+
+        # backups/ should survive (contains backup of this uninstall)
+        assert (claude_dir / "backups").is_dir()
+
+    def test_clean_all_removes_backups_dir(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+        installer = Installer(verbose=True)
+        installer.install()
+
+        uninstaller = Installer(verbose=True, clean_all=True)
+        uninstaller.uninstall()
+
+        assert not (claude_dir / "backups").exists()
+
+    def test_non_empty_queue_dir_warns_and_preserves(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+        installer = Installer(verbose=True)
+        installer.install()
+
+        # Put user content in queue/
+        (claude_dir / "queue" / "tasks.json").write_text('{"tasks": []}')
+
+        installer.uninstall()
+
+        # queue/ should survive because it has user content
+        assert (claude_dir / "queue").is_dir()
+        assert (claude_dir / "queue" / "tasks.json").exists()

@@ -225,6 +225,17 @@ def tdd_populated_claude_dir(mock_claude_dir):
 
 
 # =============================================================================
+# Uninstall-specific Fixtures
+# =============================================================================
+
+@pytest.fixture
+def clean_all_installer(patched_paths):
+    """Create an Installer instance with clean_all=True."""
+    from install import Installer
+    return Installer(verbose=True, clean_all=True)
+
+
+# =============================================================================
 # Test Markers
 # =============================================================================
 

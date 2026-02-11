@@ -172,3 +172,84 @@ class TestPreserveAgentsFlag:
 
         # Custom agent should still exist
         assert (claude_dir / "agents" / "my-custom-agent.md").exists()
+
+
+@pytest.mark.integration
+class TestUninstallPreservesUserSettings:
+    """Test that uninstall preserves user settings in settings.json."""
+
+    def test_full_cycle_settings_preserved(self, patched_paths, mock_settings_file):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+        settings_path = claude_dir / "settings.json"
+
+        # Install (merges SC hooks into user settings)
+        installer = Installer(verbose=True)
+        installer.install()
+
+        # Verify SC content was added
+        data = json.loads(settings_path.read_text())
+        assert data.get("alwaysThinkingEnabled") is True
+
+        # Uninstall (should reverse merge, preserve user data)
+        installer.uninstall()
+
+        # User settings should survive
+        assert settings_path.exists()
+        data = json.loads(settings_path.read_text())
+        assert "permissions" in data
+        assert data["permissions"]["allow"] == ["/usr/local/bin/npm"]
+        assert data.get("customSetting") == "user-value"
+
+        # SC-only keys should be gone
+        assert "alwaysThinkingEnabled" not in data
+
+    def test_settings_deleted_when_only_superclaude_content(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+        settings_path = claude_dir / "settings.json"
+
+        # Remove any pre-existing settings
+        if settings_path.exists():
+            settings_path.unlink()
+
+        # Install (creates settings from template)
+        installer = Installer(verbose=True)
+        installer.install()
+        assert settings_path.exists()
+
+        # Uninstall (should delete since all content is SC-owned)
+        installer.uninstall()
+        assert not settings_path.exists()
+
+
+@pytest.mark.integration
+class TestUninstallBackupIntegration:
+    """Test backup creation during uninstall."""
+
+    def test_backup_enables_recovery(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        # Install
+        installer = Installer(verbose=True)
+        installer.install()
+
+        # Verify CLAUDE.md installed
+        assert (claude_dir / "CLAUDE.md").exists()
+        original_content = (claude_dir / "CLAUDE.md").read_text()
+
+        # Uninstall (creates backup)
+        installer.uninstall()
+
+        # CLAUDE.md should be gone
+        assert not (claude_dir / "CLAUDE.md").exists()
+
+        # But backup should have it
+        backups_dir = claude_dir / "backups"
+        backup_dirs = [d for d in backups_dir.iterdir() if d.name.startswith("superclaude_uninstall_")]
+        assert len(backup_dirs) >= 1
+        assert (backup_dirs[0] / "CLAUDE.md").read_text() == original_content

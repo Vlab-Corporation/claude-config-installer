@@ -77,10 +77,11 @@ TDD_MANAGED_PATHS = [
 
 
 class Installer:
-    def __init__(self, verbose=False, preserve_agents=False, dry_run=False):
+    def __init__(self, verbose=False, preserve_agents=False, dry_run=False, clean_all=False):
         self.verbose = verbose
         self.preserve_agents = preserve_agents
         self.dry_run = dry_run
+        self.clean_all = clean_all
         self.installed_files = []
         self.backup_dir = None
 
@@ -307,6 +308,73 @@ class Installer:
 
         return merged
 
+    def unmerge_settings(self):
+        """Reverse merge: remove SuperClaude-added content from settings.json."""
+        target_path = CLAUDE_DIR / "settings.json"
+        template_path = SCRIPT_DIR / "src" / "root" / "settings.json"
+
+        if not target_path.exists():
+            self.log_verbose("No settings.json to unmerge")
+            return
+
+        if self.dry_run:
+            self.log("Would unmerge settings.json", "info")
+            return
+
+        try:
+            existing = json.loads(target_path.read_text())
+        except (json.JSONDecodeError, Exception):
+            self.log("Could not parse settings.json during unmerge", "warning")
+            return
+
+        try:
+            template = json.loads(template_path.read_text())
+        except (json.JSONDecodeError, FileNotFoundError, Exception):
+            template = {}
+
+        # Remove SC-added hooks by command path
+        sc_hook_commands = set()
+        for event_hooks in template.get("hooks", {}).values():
+            for hook_group in event_hooks:
+                for hook in hook_group.get("hooks", []):
+                    cmd = hook.get("command", "")
+                    if cmd:
+                        sc_hook_commands.add(cmd)
+
+        if "hooks" in existing and sc_hook_commands:
+            for event_name in list(existing["hooks"].keys()):
+                filtered = []
+                for hook_group in existing["hooks"][event_name]:
+                    group_hooks = hook_group.get("hooks", [])
+                    remaining = [h for h in group_hooks if h.get("command", "") not in sc_hook_commands]
+                    if remaining:
+                        hook_group["hooks"] = remaining
+                        filtered.append(hook_group)
+                if filtered:
+                    existing["hooks"][event_name] = filtered
+                else:
+                    del existing["hooks"][event_name]
+
+            if not existing["hooks"]:
+                del existing["hooks"]
+
+        # Remove SC-only keys (non-hook, non-permission keys from template)
+        for key in template:
+            if key == "hooks":
+                continue
+            if key == "permissions":
+                continue
+            if key in existing:
+                del existing[key]
+
+        # If nothing meaningful remains, delete the file
+        if not existing or existing == {}:
+            target_path.unlink()
+            self.log("Removed settings.json (no user content remaining)", "info")
+        else:
+            target_path.write_text(json.dumps(existing, indent=2) + "\n")
+            self.log("Unmerged settings.json (user settings preserved)", "success")
+
     def set_executable_permissions(self):
         """Set executable permissions on hooks and bin files."""
         executable_files = get_executable_files()
@@ -427,6 +495,9 @@ class Installer:
         if self.dry_run:
             self.log("DRY RUN - No files will be deleted", "warning")
 
+        # Create backup before removing files
+        self._create_uninstall_backup()
+
         all_files_to_remove = get_files_to_uninstall()
         self.log(f"Checking {len(all_files_to_remove)} files...")
 
@@ -436,6 +507,15 @@ class Installer:
             # Never touch TDD project files
             if item in TDD_MANAGED_PATHS:
                 self.log_verbose(f"Preserved (TDD): {item}")
+                continue
+
+            # Honor --preserve-agents in uninstall
+            if self.preserve_agents and item.startswith("agents/"):
+                self.log_verbose(f"Preserved (agents): {item}")
+                continue
+
+            # Skip settings.json — handled by unmerge_settings
+            if item == "settings.json":
                 continue
 
             item_path = CLAUDE_DIR / item
@@ -460,6 +540,9 @@ class Installer:
             except Exception as e:
                 self.log(f"Could not remove {item}: {e}", "warning")
 
+        # Unmerge settings.json (reverse merge)
+        self.unmerge_settings()
+
         # Clean up empty parent directories
         if not self.dry_run:
             cleaned_parents = set()
@@ -477,6 +560,9 @@ class Installer:
                         parent = parent.parent
                 except Exception:
                     pass
+
+        # Clean up runtime directories
+        self._cleanup_runtime_dirs()
 
         # Remove version tracking file
         version_file = CLAUDE_DIR / ".superclaude-installer-version"
@@ -499,6 +585,73 @@ class Installer:
         print("=" * 50 + "\n")
 
         return True
+
+    def _create_uninstall_backup(self):
+        """Create backup of files before uninstall."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = CLAUDE_DIR / "backups" / f"superclaude_uninstall_{timestamp}"
+
+        all_files = get_files_to_uninstall()
+        files_to_backup = []
+        for item in all_files:
+            if item in TDD_MANAGED_PATHS:
+                continue
+            item_path = CLAUDE_DIR / item
+            if item_path.is_file():
+                files_to_backup.append(item_path)
+
+        if not files_to_backup:
+            self.log("No files to backup before uninstall", "info")
+            return
+
+        if self.dry_run:
+            self.log(f"Would backup {len(files_to_backup)} files before uninstall", "info")
+            return
+
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for file_path in files_to_backup:
+            rel_path = file_path.relative_to(CLAUDE_DIR)
+            dest = backup_dir / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file_path, dest)
+            self.log_verbose(f"Backed up: {rel_path}")
+
+        self.log(f"Uninstall backup created: {backup_dir}", "success")
+
+    def _cleanup_runtime_dirs(self):
+        """Clean up runtime directories created during install."""
+        runtime_dirs = get_runtime_dirs()
+        if not runtime_dirs:
+            return
+
+        for dir_name in runtime_dirs:
+            dir_path = CLAUDE_DIR / dir_name
+            if not dir_path.exists():
+                continue
+
+            # backups/ is preserved by default (contains uninstall backup)
+            if dir_name == "backups" and not self.clean_all:
+                self.log_verbose(f"Preserved directory: {dir_name}")
+                continue
+
+            # Only remove empty directories; warn if non-empty
+            if dir_path.is_dir():
+                contents = list(dir_path.iterdir())
+                if not contents:
+                    if self.dry_run:
+                        self.log_verbose(f"Would remove empty directory: {dir_name}")
+                    else:
+                        dir_path.rmdir()
+                        self.log_verbose(f"Removed empty directory: {dir_name}")
+                else:
+                    if self.clean_all:
+                        if self.dry_run:
+                            self.log_verbose(f"Would remove directory: {dir_name}")
+                        else:
+                            shutil.rmtree(dir_path)
+                            self.log_verbose(f"Removed directory: {dir_name}")
+                    else:
+                        self.log(f"Directory not empty, preserving: {dir_name}", "warning")
 
     def check_update(self):
         """Check if a newer version is available on GitHub."""
@@ -572,6 +725,11 @@ def main():
         help="Skip installing agents/ directory files",
     )
     parser.add_argument(
+        "--clean-all",
+        action="store_true",
+        help="Remove all SuperClaude data including backups (use with --uninstall)",
+    )
+    parser.add_argument(
         "--check-update",
         action="store_true",
         help="Check if a newer version is available",
@@ -612,6 +770,7 @@ def main():
         verbose=args.verbose,
         preserve_agents=args.preserve_agents,
         dry_run=args.dry_run,
+        clean_all=args.clean_all,
     )
 
     if args.check_update:
