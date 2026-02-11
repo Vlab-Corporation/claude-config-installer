@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.version import get_current_install_files, get_executable_files
+from src.version import get_current_install_files, get_executable_files, get_agent_files
 
 
 @pytest.mark.integration
@@ -253,3 +253,78 @@ class TestUninstallBackupIntegration:
         backup_dirs = [d for d in backups_dir.iterdir() if d.name.startswith("superclaude_uninstall_")]
         assert len(backup_dirs) >= 1
         assert (backup_dirs[0] / "CLAUDE.md").read_text() == original_content
+
+
+@pytest.mark.integration
+class TestAgentInstallFlow:
+    """Test optional TDD agent install/uninstall E2E flow."""
+
+    def test_install_with_agents_full_cycle(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        # Install with agents
+        installer = Installer(verbose=True, install_agents=True)
+        assert installer.install() is True
+
+        # All standard files installed
+        for dest in get_current_install_files().values():
+            assert (claude_dir / dest).exists(), f"Missing: {dest}"
+
+        # All agent files installed
+        for dest in get_agent_files().values():
+            assert (claude_dir / dest).exists(), f"Agent missing: {dest}"
+
+        # Tracking file exists
+        assert patched_paths["agent_version_file"].exists()
+
+        # Uninstall
+        uninstaller = Installer(verbose=True)
+        assert uninstaller.uninstall() is True
+
+        # All gone
+        for dest in get_current_install_files().values():
+            assert not (claude_dir / dest).exists(), f"Should be removed: {dest}"
+        for dest in get_agent_files().values():
+            assert not (claude_dir / dest).exists(), f"Agent should be removed: {dest}"
+
+    def test_install_without_agents_preserves_tdd_agents(self, patched_paths, tdd_populated_claude_dir):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        # Manually place TDD agent files (simulating TDD project)
+        for dest in get_agent_files().values():
+            dest_path = claude_dir / dest
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_text("# TDD project agent")
+
+        # Install without agents
+        installer = Installer(verbose=True, install_agents=False)
+        installer.install()
+
+        # TDD agents should be untouched
+        for dest in get_agent_files().values():
+            content = (claude_dir / dest).read_text()
+            assert content == "# TDD project agent"
+
+        # Uninstall
+        installer.uninstall()
+
+        # TDD agent files should still exist (not installed by us)
+        for dest in get_agent_files().values():
+            assert (claude_dir / dest).exists(), f"TDD agent should be preserved: {dest}"
+
+    def test_agent_tracking_file_cleanup(self, patched_paths):
+        from install import Installer
+
+        # Install with agents
+        installer = Installer(verbose=True, install_agents=True)
+        installer.install()
+        assert patched_paths["agent_version_file"].exists()
+
+        # Uninstall
+        uninstaller = Installer(verbose=True)
+        uninstaller.uninstall()
+        assert not patched_paths["agent_version_file"].exists()

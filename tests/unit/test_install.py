@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.version import get_current_install_files, get_executable_files
+from src.version import get_current_install_files, get_executable_files, get_agent_files
 
 
 # =============================================================================
@@ -580,3 +580,150 @@ class TestUninstallRuntimeDirs:
         # queue/ should survive because it has user content
         assert (claude_dir / "queue").is_dir()
         assert (claude_dir / "queue" / "tasks.json").exists()
+
+
+# =============================================================================
+# Install Agents (--with-agents)
+# =============================================================================
+
+class TestInstallAgents:
+    """Test optional TDD agent installation."""
+
+    def test_with_agents_installs_tdd_agents(self, with_agents_installer, patched_paths):
+        with_agents_installer.install_agent_files()
+
+        claude_dir = patched_paths["claude_dir"]
+        for dest in get_agent_files().values():
+            assert (claude_dir / dest).exists(), f"Agent should be installed: {dest}"
+
+    def test_no_agents_skips_installation(self, no_agents_installer, patched_paths):
+        no_agents_installer.install_agent_files()
+
+        claude_dir = patched_paths["claude_dir"]
+        for dest in get_agent_files().values():
+            assert not (claude_dir / dest).exists(), f"Agent should NOT be installed: {dest}"
+
+    def test_with_agents_saves_tracking_file(self, with_agents_installer, patched_paths):
+        with_agents_installer.install_agent_files()
+
+        assert patched_paths["agent_version_file"].exists()
+
+    def test_no_agents_does_not_create_tracking_file(self, no_agents_installer, patched_paths):
+        no_agents_installer.install_agent_files()
+
+        assert not patched_paths["agent_version_file"].exists()
+
+    def test_with_agents_dry_run_no_files_created(self, patched_paths):
+        from install import Installer
+
+        installer = Installer(verbose=True, dry_run=True, install_agents=True)
+        installer.install_agent_files()
+
+        claude_dir = patched_paths["claude_dir"]
+        for dest in get_agent_files().values():
+            assert not (claude_dir / dest).exists()
+        assert not patched_paths["agent_version_file"].exists()
+
+    def test_non_interactive_defaults_to_skip(self, patched_paths):
+        from install import Installer
+
+        # install_agents=None with non-interactive stdin
+        installer = Installer(verbose=True, install_agents=None)
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            installer.install_agent_files()
+
+        claude_dir = patched_paths["claude_dir"]
+        for dest in get_agent_files().values():
+            assert not (claude_dir / dest).exists()
+
+    def test_interactive_prompt_yes(self, patched_paths):
+        from install import Installer
+
+        installer = Installer(verbose=True, install_agents=None)
+        with patch("sys.stdin") as mock_stdin, \
+             patch("builtins.input", return_value="y"):
+            mock_stdin.isatty.return_value = True
+            installer.install_agent_files()
+
+        claude_dir = patched_paths["claude_dir"]
+        for dest in get_agent_files().values():
+            assert (claude_dir / dest).exists()
+
+    def test_interactive_prompt_no(self, patched_paths):
+        from install import Installer
+
+        installer = Installer(verbose=True, install_agents=None)
+        with patch("sys.stdin") as mock_stdin, \
+             patch("builtins.input", return_value="n"):
+            mock_stdin.isatty.return_value = True
+            installer.install_agent_files()
+
+        claude_dir = patched_paths["claude_dir"]
+        for dest in get_agent_files().values():
+            assert not (claude_dir / dest).exists()
+
+
+# =============================================================================
+# Uninstall Agents
+# =============================================================================
+
+class TestUninstallAgents:
+    """Test TDD agent removal during uninstall."""
+
+    def test_uninstall_removes_agents_when_installed_by_us(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        # Install with agents
+        installer = Installer(verbose=True, install_agents=True)
+        installer.install()
+
+        # Verify agents installed
+        for dest in get_agent_files().values():
+            assert (claude_dir / dest).exists()
+
+        # Uninstall
+        uninstaller = Installer(verbose=True)
+        uninstaller.uninstall()
+
+        # Agents should be removed
+        for dest in get_agent_files().values():
+            assert not (claude_dir / dest).exists()
+
+    def test_uninstall_preserves_agents_not_installed_by_us(self, patched_paths):
+        from install import Installer
+
+        claude_dir = patched_paths["claude_dir"]
+
+        # Manually create agent files (simulating TDD project installation)
+        for dest in get_agent_files().values():
+            dest_path = claude_dir / dest
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_text("# TDD-installed agent")
+
+        # Install WITHOUT agents (no tracking file)
+        installer = Installer(verbose=True, install_agents=False)
+        installer.install()
+
+        # Uninstall
+        uninstaller = Installer(verbose=True)
+        uninstaller.uninstall()
+
+        # Agents should survive (not installed by us, protected by TDD_AGENT_PATHS)
+        for dest in get_agent_files().values():
+            assert (claude_dir / dest).exists(), f"Agent should be preserved: {dest}"
+
+    def test_uninstall_removes_agent_tracking_file(self, patched_paths):
+        from install import Installer
+
+        # Install with agents
+        installer = Installer(verbose=True, install_agents=True)
+        installer.install()
+        assert patched_paths["agent_version_file"].exists()
+
+        # Uninstall
+        uninstaller = Installer(verbose=True)
+        uninstaller.uninstall()
+        assert not patched_paths["agent_version_file"].exists()

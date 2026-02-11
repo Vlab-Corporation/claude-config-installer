@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __version_info__ = tuple(int(x) for x in __version__.split("."))
 
 # Metadata
@@ -32,6 +32,7 @@ __url__ = "https://github.com/Vlab-Corporation/claude-config-installer"
 # =============================================================================
 
 VERSION_FILE = Path.home() / ".claude" / ".superclaude-installer-version"
+AGENT_VERSION_FILE = Path.home() / ".claude" / ".superclaude-agents-installed"
 
 
 # =============================================================================
@@ -195,12 +196,34 @@ VERSION_MIGRATIONS: Dict[str, Dict[str, Any]] = {
         "executable_files": [],
         "runtime_dirs": [],
         "legacy_files": [],
+        "agent_files": {
+            "src/agents/tdd-coach.md": "agents/tdd-coach.md",
+            "src/agents/test-architect.md": "agents/test-architect.md",
+            "src/agents/convention-guard.md": "agents/convention-guard.md",
+        },
         "changes": [
             "Add unmerge_settings() to reverse settings.json merge on uninstall",
             "Create backup before uninstall with superclaude_uninstall_ prefix",
             "Honor --preserve-agents flag during uninstall",
             "Add runtime directory cleanup on uninstall",
             "Add --clean-all flag for complete removal including backups",
+            "Add optional TDD agent installation with --with-agents flag",
+        ],
+    },
+    "1.2.0": {
+        "description": "Optional TDD agent installation with --with-agents flag",
+        "install_files": {},
+        "executable_files": [],
+        "runtime_dirs": [],
+        "legacy_files": [],
+        "agent_files": {},
+        "changes": [
+            "Add --with-agents flag for optional TDD agent installation",
+            "Add --no-agents flag to skip agent prompt",
+            "Interactive prompt for agent installation in local mode",
+            "Non-interactive mode defaults to skipping agents",
+            "Agent tracking via .superclaude-agents-installed file",
+            "Uninstall removes agents only if installed by this tool",
         ],
     },
 }
@@ -393,6 +416,84 @@ def save_installed_version() -> bool:
     try:
         VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
         VERSION_FILE.write_text(__version__)
+        return True
+    except Exception:
+        return False
+
+
+# =============================================================================
+# Optional Agent Files
+# =============================================================================
+
+def get_agent_files() -> Dict[str, str]:
+    """
+    Get optional TDD agent files that can be installed with --with-agents.
+
+    Accumulates agent_files from all versions up to and including the current
+    version. These files are NOT installed by default — only with --with-agents.
+
+    Returns:
+        Dict mapping source paths to destination paths
+    """
+    all_files: Dict[str, str] = {}
+    for version in sorted(VERSION_MIGRATIONS.keys(), key=lambda v: tuple(int(x) for x in v.split("."))):
+        v_tuple = tuple(int(x) for x in version.split("."))
+        if v_tuple <= __version_info__:
+            all_files.update(VERSION_MIGRATIONS[version].get("agent_files", {}))
+    return all_files
+
+
+def get_agents_installed() -> Optional[str]:
+    """
+    Get the version when optional agents were last installed.
+
+    Returns:
+        Version string if agents are installed, None otherwise
+    """
+    try:
+        if not AGENT_VERSION_FILE.exists():
+            return None
+
+        content = AGENT_VERSION_FILE.read_text().strip()
+
+        parts = content.split(".")
+        if len(parts) != 3:
+            return None
+
+        for part in parts:
+            if not part.isdigit():
+                return None
+
+        return content
+    except Exception:
+        return None
+
+
+def save_agents_installed() -> bool:
+    """
+    Save the current version as agents installed version.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        AGENT_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AGENT_VERSION_FILE.write_text(__version__)
+        return True
+    except Exception:
+        return False
+
+
+def remove_agents_installed_flag() -> bool:
+    """
+    Remove the agents installed tracking file.
+
+    Returns:
+        True if successful or file didn't exist, False on error
+    """
+    try:
+        if AGENT_VERSION_FILE.exists():
+            AGENT_VERSION_FILE.unlink()
         return True
     except Exception:
         return False

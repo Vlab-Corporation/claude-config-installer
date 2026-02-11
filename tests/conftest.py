@@ -56,16 +56,19 @@ def mock_home_dir(tmp_path, mock_claude_dir):
 @pytest.fixture
 def mock_source_files(tmp_path):
     """
-    Create mock source files matching the 106-file install mapping.
+    Create mock source files matching the 106-file install mapping
+    plus optional agent files.
     """
     source_dir = tmp_path / "source"
     source_dir.mkdir()
 
-    from src.version import get_current_install_files
+    from src.version import get_current_install_files, get_agent_files
 
-    install_files = get_current_install_files()
+    all_files = {}
+    all_files.update(get_current_install_files())
+    all_files.update(get_agent_files())
 
-    for src_path in install_files.keys():
+    for src_path in all_files.keys():
         full_path = source_dir / src_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -113,17 +116,20 @@ def mock_source_files(tmp_path):
 def patched_paths(mock_home_dir, mock_source_files):
     """Patch CLAUDE_DIR and SCRIPT_DIR constants in install.py."""
     mock_version_file = mock_home_dir / ".claude" / ".superclaude-installer-version"
+    mock_agent_version_file = mock_home_dir / ".claude" / ".superclaude-agents-installed"
     with patch.multiple(
         "install",
         CLAUDE_DIR=mock_home_dir / ".claude",
         SCRIPT_DIR=mock_source_files,
     ):
         with patch("src.version.VERSION_FILE", mock_version_file):
-            yield {
-                "claude_dir": mock_home_dir / ".claude",
-                "script_dir": mock_source_files,
-                "version_file": mock_version_file,
-            }
+            with patch("src.version.AGENT_VERSION_FILE", mock_agent_version_file):
+                yield {
+                    "claude_dir": mock_home_dir / ".claude",
+                    "script_dir": mock_source_files,
+                    "version_file": mock_version_file,
+                    "agent_version_file": mock_agent_version_file,
+                }
 
 
 @pytest.fixture
@@ -233,6 +239,20 @@ def clean_all_installer(patched_paths):
     """Create an Installer instance with clean_all=True."""
     from install import Installer
     return Installer(verbose=True, clean_all=True)
+
+
+@pytest.fixture
+def with_agents_installer(patched_paths):
+    """Create an Installer instance with install_agents=True."""
+    from install import Installer
+    return Installer(verbose=True, install_agents=True)
+
+
+@pytest.fixture
+def no_agents_installer(patched_paths):
+    """Create an Installer instance with install_agents=False."""
+    from install import Installer
+    return Installer(verbose=True, install_agents=False)
 
 
 # =============================================================================

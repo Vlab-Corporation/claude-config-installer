@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.version import get_current_install_files
+from src.version import get_current_install_files, get_agent_files
 
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -75,3 +75,41 @@ class TestSourceFileFormat:
                     assert content.startswith("#!"), (
                         f"Shell script missing shebang: {src}"
                     )
+
+
+class TestAgentSourceFilesExist:
+    """Verify optional TDD agent source files exist on disk."""
+
+    def test_all_agent_source_files_exist(self):
+        missing = []
+        for src in get_agent_files().keys():
+            src_path = PROJECT_ROOT / src
+            if not src_path.exists():
+                missing.append(src)
+
+        assert not missing, (
+            f"Missing {len(missing)} agent source files:\n"
+            + "\n".join(f"  {f}" for f in missing)
+        )
+
+    def test_agent_source_files_are_not_empty(self):
+        empty = []
+        for src in get_agent_files().keys():
+            src_path = PROJECT_ROOT / src
+            if src_path.exists() and src_path.stat().st_size == 0:
+                empty.append(src)
+
+        assert not empty, (
+            f"Found {len(empty)} empty agent source files:\n"
+            + "\n".join(f"  {f}" for f in empty)
+        )
+
+    def test_agent_files_have_frontmatter(self):
+        """Agent .md files should have YAML frontmatter with name and description."""
+        for src in get_agent_files().keys():
+            src_path = PROJECT_ROOT / src
+            if src_path.exists() and src_path.suffix == ".md":
+                content = src_path.read_text()
+                assert content.startswith("---"), (
+                    f"Agent file should start with YAML frontmatter: {src}"
+                )

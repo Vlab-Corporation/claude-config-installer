@@ -36,6 +36,11 @@ from src.version import (
     get_files_to_uninstall,
     get_executable_files,
     get_runtime_dirs,
+    get_agent_files,
+    get_agents_installed,
+    save_agents_installed,
+    remove_agents_installed_flag,
+    AGENT_VERSION_FILE,
 )
 
 
@@ -48,7 +53,7 @@ GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 # File mappings from version.py (SSOT)
 INSTALL_MAP = get_current_install_files()
 
-# TDD project files that must never be touched
+# TDD project files that must never be touched (non-agent paths)
 TDD_MANAGED_PATHS = [
     "commands/sc/tdd.md",
     "commands/sc/tdd-backend.md",
@@ -68,20 +73,26 @@ TDD_MANAGED_PATHS = [
     "docs/TDD_ERROR_RECOVERY.md",
     "docs/TDD_MCP_FALLBACK.md",
     "docs/conventions/CONVENTIONS.md",
-    "agents/tdd-coach.md",
-    "agents/test-architect.md",
-    "agents/convention-guard.md",
     ".tdd-version",
     ".tdd-agents-installed",
 ]
 
+# TDD agent paths — protected unless --with-agents is used
+TDD_AGENT_PATHS = [
+    "agents/tdd-coach.md",
+    "agents/test-architect.md",
+    "agents/convention-guard.md",
+]
+
 
 class Installer:
-    def __init__(self, verbose=False, preserve_agents=False, dry_run=False, clean_all=False):
+    def __init__(self, verbose=False, preserve_agents=False, dry_run=False,
+                 clean_all=False, install_agents=None):
         self.verbose = verbose
         self.preserve_agents = preserve_agents
         self.dry_run = dry_run
         self.clean_all = clean_all
+        self.install_agents = install_agents  # None=prompt, True=install, False=skip
         self.installed_files = []
         self.backup_dir = None
 
@@ -399,6 +410,105 @@ class Installer:
             "success",
         )
 
+    def _should_install_agents(self):
+        """Determine whether to install optional TDD agents.
+
+        Returns True/False based on --with-agents/--no-agents flags,
+        or prompts the user interactively when no flag was given.
+        """
+        if self.install_agents is not None:
+            return self.install_agents
+
+        # In non-interactive mode (piped), default to skip
+        if not sys.stdin.isatty():
+            self.log_verbose("Non-interactive mode: skipping optional agents")
+            return False
+
+        # Interactive prompt
+        print()
+        self.log("Optional TDD agents available (tdd-coach, test-architect, convention-guard)", "info")
+        try:
+            answer = input("  Install TDD agents? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        return answer in ("y", "yes")
+
+    def install_agent_files(self):
+        """Install optional TDD agent files if requested."""
+        agent_files = get_agent_files()
+        if not agent_files:
+            return
+
+        should_install = self._should_install_agents()
+        if not should_install:
+            self.log_verbose("Skipping optional TDD agents")
+            return
+
+        self.log("Installing optional TDD agents...")
+        count = 0
+        for src, dest in agent_files.items():
+            src_path = SCRIPT_DIR / src
+            dest_path = CLAUDE_DIR / dest
+
+            if not src_path.exists():
+                self.log(f"Agent source not found: {src}", "warning")
+                continue
+
+            if self.dry_run:
+                action = "overwrite" if dest_path.exists() else "create"
+                self.log_verbose(f"Would {action}: {dest}")
+                count += 1
+                continue
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dest_path)
+            self.log_verbose(f"Installed agent: {dest}")
+            count += 1
+
+        if count > 0:
+            if not self.dry_run:
+                save_agents_installed()
+            self.log(
+                f"{'Would install' if self.dry_run else 'Installed'} {count} TDD agents",
+                "success",
+            )
+
+    def uninstall_agent_files(self):
+        """Remove optional TDD agent files during uninstall."""
+        agent_files = get_agent_files()
+        if not agent_files:
+            return
+
+        # Only remove if agents were installed by us
+        if not get_agents_installed() and not self.clean_all:
+            self.log_verbose("TDD agents were not installed by us, skipping")
+            return
+
+        count = 0
+        for dest in agent_files.values():
+            dest_path = CLAUDE_DIR / dest
+            if dest_path.exists():
+                if self.dry_run:
+                    self.log_verbose(f"Would remove agent: {dest}")
+                else:
+                    dest_path.unlink()
+                    self.log_verbose(f"Removed agent: {dest}")
+                count += 1
+
+        if count > 0:
+            if not self.dry_run:
+                remove_agents_installed_flag()
+            self.log(
+                f"{'Would remove' if self.dry_run else 'Removed'} {count} TDD agents",
+                "success",
+            )
+
+        # Remove agent version tracking file
+        agent_version_file = CLAUDE_DIR / ".superclaude-agents-installed"
+        if agent_version_file.exists() and not self.dry_run:
+            agent_version_file.unlink()
+
     def create_runtime_dirs(self):
         """Create runtime directories needed by the framework."""
         runtime_dirs = get_runtime_dirs()
@@ -461,6 +571,7 @@ class Installer:
         self.merge_settings()
         self.set_executable_permissions()
         self.create_runtime_dirs()
+        self.install_agent_files()
 
         if self.dry_run:
             print("\n" + "=" * 50)
@@ -503,9 +614,16 @@ class Installer:
 
         removed_count = 0
 
+        # Build protected paths list: always protect TDD non-agent paths,
+        # and protect TDD agent paths unless we installed them
+        protected_paths = list(TDD_MANAGED_PATHS)
+        agents_were_installed = get_agents_installed() is not None
+        if not agents_were_installed:
+            protected_paths.extend(TDD_AGENT_PATHS)
+
         for item in all_files_to_remove:
             # Never touch TDD project files
-            if item in TDD_MANAGED_PATHS:
+            if item in protected_paths:
                 self.log_verbose(f"Preserved (TDD): {item}")
                 continue
 
@@ -560,6 +678,9 @@ class Installer:
                         parent = parent.parent
                 except Exception:
                     pass
+
+        # Remove optional TDD agent files if they were installed by us
+        self.uninstall_agent_files()
 
         # Clean up runtime directories
         self._cleanup_runtime_dirs()
@@ -730,6 +851,18 @@ def main():
         help="Remove all SuperClaude data including backups (use with --uninstall)",
     )
     parser.add_argument(
+        "--with-agents",
+        action="store_true",
+        default=False,
+        help="Install optional TDD agents (tdd-coach, test-architect, convention-guard)",
+    )
+    parser.add_argument(
+        "--no-agents",
+        action="store_true",
+        default=False,
+        help="Skip optional TDD agents without prompting",
+    )
+    parser.add_argument(
         "--check-update",
         action="store_true",
         help="Check if a newer version is available",
@@ -758,6 +891,11 @@ def main():
         print(f"\nFiles to install ({len(INSTALL_MAP)}):")
         for src, dest in sorted(INSTALL_MAP.items()):
             print(f"  {src} -> {dest}")
+        agent_files = get_agent_files()
+        if agent_files:
+            print(f"\nOptional TDD agents ({len(agent_files)}):")
+            for src, dest in sorted(agent_files.items()):
+                print(f"  {src} -> {dest}")
         print(f"\nExecutable files ({len(get_executable_files())}):")
         for f in get_executable_files():
             print(f"  {f}")
@@ -766,11 +904,19 @@ def main():
             print(f"  {d}/")
         sys.exit(0)
 
+    # Determine install_agents: True (--with-agents), False (--no-agents), None (prompt)
+    install_agents = None
+    if args.with_agents:
+        install_agents = True
+    elif args.no_agents:
+        install_agents = False
+
     installer = Installer(
         verbose=args.verbose,
         preserve_agents=args.preserve_agents,
         dry_run=args.dry_run,
         clean_all=args.clean_all,
+        install_agents=install_agents,
     )
 
     if args.check_update:

@@ -2,6 +2,22 @@
 
 All notable changes to the SuperClaude Config Installer will be documented in this file.
 
+## [1.2.0] - 2026-02
+
+### Added
+- `--with-agents` flag for optional TDD agent installation (tdd-coach, test-architect, convention-guard)
+- `--no-agents` flag to skip agent installation without prompting
+- Interactive prompt for agent installation when no flag given (local mode only)
+- Agent tracking via `.superclaude-agents-installed` version file
+- `get_agent_files()`, `get_agents_installed()`, `save_agents_installed()`, `remove_agents_installed_flag()` utility functions
+- Agent source file validation tests (frontmatter, existence, non-empty)
+- 27 new tests (129 total) covering agent install/uninstall flows
+
+### Changed
+- TDD agent paths (`agents/tdd-coach.md`, etc.) now protected conditionally — only when not installed by this tool
+- `--list-files` output now includes optional TDD agents section
+- Non-interactive (piped) mode defaults to skipping agent installation
+
 ## [1.1.0] - 2026-02
 
 ### Added

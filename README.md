@@ -36,6 +36,8 @@ python3 install.py                    # Install all files
 python3 install.py --verbose          # Install with detailed output
 python3 install.py --dry-run          # Preview changes without modifying files
 python3 install.py --preserve-agents  # Install without overwriting agents/
+python3 install.py --with-agents      # Also install optional TDD agents
+python3 install.py --no-agents        # Skip TDD agents without prompting
 python3 install.py --list-files       # Show all managed files
 python3 install.py --uninstall        # Remove SuperClaude files (preserves user settings)
 python3 install.py --uninstall --preserve-agents  # Uninstall but keep agents/
@@ -61,6 +63,28 @@ python3 install.py --version          # Show version
 | Bin | 1 | `~/.claude/bin/` |
 | Tests | 1 | `~/.claude/tests/` |
 | **Total** | **106** | |
+
+## Optional TDD Agents
+
+Three TDD-specific agents can be optionally installed:
+
+| Agent | Description |
+|-------|-------------|
+| `tdd-coach` | Red-green-refactor discipline enforcement |
+| `test-architect` | Test suite structure and fixture design |
+| `convention-guard` | Project convention monitoring |
+
+```bash
+python3 install.py --with-agents      # Install with TDD agents
+python3 install.py --no-agents        # Skip without prompting
+python3 install.py                    # Interactive prompt (local mode only)
+```
+
+In piped mode (`curl | bash`), agents are **not installed** by default. Use `--with-agents` explicitly:
+
+```bash
+curl -sL ... | bash -s -- --with-agents
+```
 
 ## Coexistence with TDD Project
 

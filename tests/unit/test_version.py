@@ -14,6 +14,7 @@ from src.version import (
     __title__,
     __description__,
     VERSION_FILE,
+    AGENT_VERSION_FILE,
     VERSION_MIGRATIONS,
     get_version,
     get_version_info,
@@ -26,6 +27,10 @@ from src.version import (
     get_legacy_files_to_remove,
     get_installed_version,
     save_installed_version,
+    get_agent_files,
+    get_agents_installed,
+    save_agents_installed,
+    remove_agents_installed_flag,
 )
 
 
@@ -308,3 +313,74 @@ class TestUtilityFunctions:
     def test_get_legacy_files_to_remove_empty_for_fresh_install(self):
         with patch("src.version.get_installed_version", return_value=None):
             assert get_legacy_files_to_remove() == []
+
+
+# =============================================================================
+# Agent Files
+# =============================================================================
+
+class TestAgentFiles:
+    """Verify optional TDD agent file mapping."""
+
+    def test_agent_files_count_is_3(self):
+        assert len(get_agent_files()) == 3
+
+    def test_agent_files_are_tdd_agents(self):
+        agent_dests = set(get_agent_files().values())
+        assert "agents/tdd-coach.md" in agent_dests
+        assert "agents/test-architect.md" in agent_dests
+        assert "agents/convention-guard.md" in agent_dests
+
+    def test_agent_files_source_paths_start_with_src(self):
+        for src in get_agent_files().keys():
+            assert src.startswith("src/"), f"Agent source should start with 'src/': {src}"
+
+    def test_agent_files_not_in_install_files(self):
+        """Agent files should NOT be in the standard install mapping."""
+        install_dests = set(get_current_install_files().values())
+        for dest in get_agent_files().values():
+            assert dest not in install_dests, (
+                f"Agent file should not be in standard install: {dest}"
+            )
+
+    def test_agent_version_file_points_to_claude_dir(self):
+        assert ".claude" in str(AGENT_VERSION_FILE)
+        assert ".superclaude-agents-installed" in str(AGENT_VERSION_FILE)
+
+
+# =============================================================================
+# Agent Version Tracking
+# =============================================================================
+
+class TestAgentVersionTracking:
+    """Test agent installed version read/write/delete."""
+
+    def test_get_agents_installed_returns_none_when_no_file(self, tmp_path):
+        fake_file = tmp_path / ".superclaude-agents-installed"
+        with patch("src.version.AGENT_VERSION_FILE", fake_file):
+            assert get_agents_installed() is None
+
+    def test_save_and_get_agents_installed(self, tmp_path):
+        fake_file = tmp_path / ".superclaude-agents-installed"
+        with patch("src.version.AGENT_VERSION_FILE", fake_file):
+            assert save_agents_installed() is True
+            assert get_agents_installed() == __version__
+
+    def test_remove_agents_installed_flag(self, tmp_path):
+        fake_file = tmp_path / ".superclaude-agents-installed"
+        with patch("src.version.AGENT_VERSION_FILE", fake_file):
+            save_agents_installed()
+            assert fake_file.exists()
+            assert remove_agents_installed_flag() is True
+            assert not fake_file.exists()
+
+    def test_remove_agents_installed_flag_noop_when_missing(self, tmp_path):
+        fake_file = tmp_path / ".superclaude-agents-installed"
+        with patch("src.version.AGENT_VERSION_FILE", fake_file):
+            assert remove_agents_installed_flag() is True
+
+    def test_get_agents_installed_returns_none_for_invalid(self, tmp_path):
+        fake_file = tmp_path / ".superclaude-agents-installed"
+        fake_file.write_text("invalid")
+        with patch("src.version.AGENT_VERSION_FILE", fake_file):
+            assert get_agents_installed() is None
