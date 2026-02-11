@@ -9,10 +9,24 @@ Installs the SuperClaude framework configuration to `~/.claude/` for Claude Code
 
 ## Installation
 
+### One-liner (recommended)
+
+```bash
+curl -sL https://raw.githubusercontent.com/Vlab-Corporation/claude-config-installer/main/install.sh | bash
+```
+
+With options:
+
+```bash
+curl -sL https://raw.githubusercontent.com/Vlab-Corporation/claude-config-installer/main/install.sh | bash -s -- --verbose
+```
+
+### Manual
+
 ```bash
 git clone https://github.com/Vlab-Corporation/claude-config-installer.git
 cd claude-config-installer
-python3 install.py
+./install.sh            # or: python3 install.py
 ```
 
 ## Usage
