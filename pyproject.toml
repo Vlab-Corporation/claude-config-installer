@@ -1,0 +1,14 @@
+[project]
+name = "claude-config-installer"
+version = "1.0.0"
+description = "Installs SuperClaude framework configuration to ~/.claude/"
+requires-python = ">=3.6"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests (fast, no external dependencies)",
+    "integration: Integration tests (may use file system)",
+    "e2e: End-to-end tests",
+    "slow: Tests that take longer to execute",
+]

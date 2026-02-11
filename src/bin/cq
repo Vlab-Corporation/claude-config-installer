@@ -1,0 +1,590 @@
+#!/usr/bin/env python3
+"""
+cq - Claude Queue CLI
+
+A command-line tool for managing Claude Code task queues.
+Can be used standalone in terminal or through Claude Code.
+
+Usage:
+    cq                      # Show status (same as cq status)
+    cq status               # Queue status summary
+    cq list                 # List all tasks
+    cq add "command"        # Add task to queue
+    cq next                 # Show next executable task
+    cq cancel <id>          # Cancel specific task
+    cq cancel --all         # Cancel all tasks
+    cq move <id> --first    # Move task to top priority
+
+Parallel Execution:
+    cq parallel plan        # Show parallel execution plan
+    cq parallel spawn [n]   # Spawn sessions for group N
+    cq parallel list        # List active parallel sessions
+    cq parallel collect     # Collect and merge results
+    cq parallel kill        # Kill all parallel sessions
+
+Options:
+    -f, --format FORMAT     Output format: json, pretty, minimal
+    -v, --verbose           Verbose output
+    -h, --help              Show help message
+    --version               Show version
+
+Output Formats:
+    pretty   - Colored terminal output (default for TTY)
+    json     - JSON output for API/web integration
+    minimal  - Compact output for shell prompts
+"""
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+# Add lib directory to path for version module
+SCRIPT_PATH = Path(__file__).resolve()
+LIB_PATHS = [
+    SCRIPT_PATH.parent.parent / "lib",  # Dev: src/lib
+    Path.home() / ".claude" / "lib",     # Installed: ~/.claude/lib
+]
+for lib_path in LIB_PATHS:
+    if lib_path.exists() and str(lib_path) not in sys.path:
+        sys.path.insert(0, str(lib_path))
+
+# Version - imported from version module
+try:
+    from version import __version__
+except ImportError:
+    __version__ = "1.0.0"  # Fallback
+
+# Find queue_manager.py
+CLAUDE_DIR = Path.home() / ".claude"
+SCRIPTS_DIR = CLAUDE_DIR / "scripts"
+
+# Add paths for imports
+sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(CLAUDE_DIR / "lib"))  # Installed location
+sys.path.insert(0, str(SCRIPT_PATH.parent.parent / "lib"))  # Dev location
+
+
+def get_default_format() -> str:
+    """Get default format based on TTY detection"""
+    if sys.stdout.isatty():
+        return "pretty"
+    return "json"
+
+
+def parse_args(args=None) -> argparse.Namespace:
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        prog="cq",
+        description="Claude Queue CLI - Manage task queues for Claude Code",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  cq                           Show queue status
+  cq list                      List all queued tasks
+  cq list -f json              List tasks as JSON
+  cq add "/sc:test feature"    Add task to queue
+  cq cancel task-abc123        Cancel a task
+  cq status -f minimal         Compact status for shell prompt
+        """
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"cq {__version__}"
+    )
+
+    parser.add_argument(
+        "-f", "--format",
+        choices=["json", "pretty", "minimal"],
+        default=None,
+        help="Output format (default: pretty for TTY, json for pipe)"
+    )
+
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Verbose output"
+    )
+
+    # Subcommands
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    # status command
+    status_parser = subparsers.add_parser("status", help="Show queue status")
+
+    # list command
+    list_parser = subparsers.add_parser("list", help="List all tasks")
+    list_parser.add_argument(
+        "--status",
+        choices=["queued", "running", "all"],
+        default=None,
+        help="Filter by status"
+    )
+
+    # add command
+    add_parser = subparsers.add_parser("add", help="Add task to queue")
+    add_parser.add_argument("task", help="Command to queue")
+    add_parser.add_argument(
+        "-p", "--priority",
+        choices=["critical", "high", "normal", "low"],
+        default="normal",
+        help="Task priority"
+    )
+    add_parser.add_argument(
+        "--after",
+        metavar="TASK_ID",
+        help="Run after specified task"
+    )
+
+    # next command
+    next_parser = subparsers.add_parser("next", help="Show next executable task")
+
+    # cancel command
+    cancel_parser = subparsers.add_parser("cancel", help="Cancel task(s)")
+    cancel_parser.add_argument(
+        "task_id",
+        nargs="?",
+        help="Task ID to cancel"
+    )
+    cancel_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Cancel all tasks"
+    )
+
+    # move command
+    move_parser = subparsers.add_parser("move", help="Change task priority")
+    move_parser.add_argument("task_id", help="Task ID to move")
+    move_parser.add_argument(
+        "--first",
+        action="store_true",
+        help="Move to top priority"
+    )
+    move_parser.add_argument(
+        "--last",
+        action="store_true",
+        help="Move to lowest priority"
+    )
+    move_parser.add_argument(
+        "--priority",
+        choices=["critical", "high", "normal", "low"],
+        help="Set specific priority"
+    )
+
+    # parallel command
+    parallel_parser = subparsers.add_parser("parallel", help="Parallel execution commands")
+    parallel_subparsers = parallel_parser.add_subparsers(dest="parallel_command", metavar="SUBCOMMAND")
+
+    # parallel plan
+    parallel_plan = parallel_subparsers.add_parser("plan", help="Show parallel execution plan")
+
+    # parallel spawn
+    parallel_spawn = parallel_subparsers.add_parser("spawn", help="Spawn sessions for a group")
+    parallel_spawn.add_argument(
+        "group",
+        nargs="?",
+        type=int,
+        default=1,
+        help="Group number to spawn (default: 1)"
+    )
+    parallel_spawn.add_argument(
+        "-d", "--dir",
+        help="Working directory for sessions"
+    )
+
+    # parallel list
+    parallel_list = parallel_subparsers.add_parser("list", help="List active parallel sessions")
+
+    # parallel collect
+    parallel_collect = parallel_subparsers.add_parser("collect", help="Collect and merge results")
+
+    # parallel kill
+    parallel_kill = parallel_subparsers.add_parser("kill", help="Kill all parallel sessions")
+
+    # parallel analyze (for conflict analysis)
+    parallel_analyze = parallel_subparsers.add_parser("analyze", help="Analyze conflict between tasks")
+    parallel_analyze.add_argument("task_a", help="First task ID")
+    parallel_analyze.add_argument("task_b", help="Second task ID")
+
+    # analyze command (ultrathink task analysis)
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze tasks for dependencies and parallel execution")
+    analyze_parser.add_argument(
+        "tasks",
+        nargs="?",
+        default=None,
+        help="Tasks to analyze (comma or newline separated)"
+    )
+    analyze_parser.add_argument(
+        "-q", "--queue",
+        action="store_true",
+        help="Analyze current queue tasks"
+    )
+    analyze_parser.add_argument(
+        "--file",
+        metavar="PATH",
+        help="Load tasks from file (md, json, txt)"
+    )
+    analyze_parser.add_argument(
+        "-e", "--execute",
+        action="store_true",
+        help="Execute after showing analysis"
+    )
+    analyze_parser.add_argument(
+        "-a", "--auto",
+        action="store_true",
+        help="Full automation (analyze and execute without confirmation)"
+    )
+
+    # Parse arguments
+    parsed = parser.parse_args(args)
+
+    # Default command is status
+    if parsed.command is None:
+        parsed.command = "status"
+
+    # Default format based on TTY
+    if parsed.format is None:
+        parsed.format = get_default_format()
+
+    return parsed
+
+
+def get_queue_manager():
+    """Get QueueManager instance"""
+    try:
+        from queue_manager import QueueManager
+        return QueueManager()
+    except ImportError as e:
+        print(f"Error: Could not import queue_manager: {e}", file=sys.stderr)
+        print("Make sure Claude Queue is properly installed.", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_formatter(format_type: str):
+    """Get formatter instance"""
+    try:
+        from formatters import get_formatter as _get_formatter
+        return _get_formatter(format_type)
+    except ImportError:
+        # Fallback to JSON if formatters not available
+        class SimpleJSONFormatter:
+            def format_status(self, data): return json.dumps(data, indent=2)
+            def format_list(self, data): return json.dumps(data, indent=2)
+            def format_task(self, data): return json.dumps(data, indent=2)
+            def format_message(self, msg, level="info"): return f"[{level}] {msg}"
+        return SimpleJSONFormatter()
+
+
+def cmd_status(args):
+    """Handle status command"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    data = qm.status()
+    print(formatter.format_status(data))
+
+
+def cmd_list(args):
+    """Handle list command"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    status_filter = getattr(args, 'status', None)
+    data = qm.list(status=status_filter)
+    print(formatter.format_list(data))
+
+
+def cmd_add(args):
+    """Handle add command"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    depends_on = []
+    if hasattr(args, 'after') and args.after:
+        depends_on = args.after.split(",")
+
+    result = qm.add(
+        command=args.task,
+        priority=args.priority,
+        depends_on=depends_on
+    )
+
+    if result.get("action_required"):
+        # Conflict detected
+        print(formatter.format_message(
+            f"Conflict detected with task(s): {result.get('conflicts')}",
+            "warning"
+        ))
+    else:
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(formatter.format_message(
+                f"Task added: {result['task']['id']} (position #{result.get('position', '?')})",
+                "success"
+            ))
+
+
+def cmd_next(args):
+    """Handle next command"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    data = qm.get_next()
+
+    if data.get("has_next"):
+        if args.format == "json":
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            print(formatter.format_task(data["task"]))
+    else:
+        print(formatter.format_message("No executable tasks", "info"))
+
+
+def cmd_cancel(args):
+    """Handle cancel command"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    if args.all:
+        result = qm.cancel(cancel_all=True)
+    elif args.task_id:
+        result = qm.cancel(task_id=args.task_id)
+    else:
+        print(formatter.format_message("Specify task ID or --all", "error"))
+        sys.exit(1)
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        cancelled = result.get("cancelled", [])
+        if cancelled:
+            print(formatter.format_message(f"Cancelled: {', '.join(cancelled)}", "success"))
+        else:
+            print(formatter.format_message("No tasks cancelled", "info"))
+
+
+def cmd_move(args):
+    """Handle move command"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    position = "first" if args.first else "last" if args.last else args.priority or "first"
+    result = qm.move(args.task_id, position)
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        if "error" in result:
+            print(formatter.format_message(result["error"], "error"))
+        else:
+            print(formatter.format_message(
+                f"Moved {args.task_id} to {result.get('new_priority', position)}",
+                "success"
+            ))
+
+
+def get_orchestrator():
+    """Get TmuxOrchestrator instance"""
+    try:
+        from tmux_orchestrator import TmuxOrchestrator
+        return TmuxOrchestrator()
+    except ImportError as e:
+        print(f"Error: Could not import tmux_orchestrator: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_parallel(args):
+    """Handle parallel commands"""
+    qm = get_queue_manager()
+    formatter = get_formatter(args.format)
+
+    subcmd = getattr(args, 'parallel_command', None)
+
+    if subcmd == "plan":
+        result = qm.get_parallel_plan()
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if "error" in result:
+                print(formatter.format_message(result["error"], "error"))
+            else:
+                plan = result["parallel_plan"]
+                print(f"\n🚀 Parallel Execution Plan")
+                print(f"{'='*50}")
+                print(f"📊 Tasks: {plan['total_tasks']} → Groups: {plan['total_groups']}")
+                print(f"⚡ Max parallelism: {plan['max_parallelism']} sessions")
+                print(f"⏱️  Time savings: {plan['time_savings_percent']}%")
+                print(f"🖥️  Sessions needed: {plan['sessions_needed']}")
+                print(f"\n📋 Groups:")
+                for g in result["groups"]:
+                    conflict_mark = " ⚠️" if g.get("has_soft_conflicts") else ""
+                    print(f"\n  Group {g['group_id']}:{conflict_mark}")
+                    for cmd in g["task_commands"]:
+                        print(f"    • {cmd}")
+
+    elif subcmd == "spawn":
+        orchestrator = get_orchestrator()
+        group_num = getattr(args, 'group', 1)
+        working_dir = getattr(args, 'dir', None)
+        result = orchestrator.spawn_parallel_group(group_num, working_dir)
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if "error" in result:
+                print(formatter.format_message(result["error"], "error"))
+            else:
+                print(f"\n✅ Spawned {result['spawned']} sessions for group {result['group']}")
+                for s in result["sessions"]:
+                    print(f"  • {s['session']}: {s['command']}")
+                if result.get("attach_command"):
+                    print(f"\n📎 Attach: {result['attach_command']}")
+
+    elif subcmd == "list":
+        orchestrator = get_orchestrator()
+        result = orchestrator.list_parallel_sessions()
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if result["active_sessions"] == 0:
+                print(formatter.format_message("No active parallel sessions", "info"))
+            else:
+                print(f"\n🖥️  Active Sessions: {result['active_sessions']}")
+                for s in result["sessions"]:
+                    print(f"  • {s['session']}: {s.get('task_id', 'unknown')}")
+
+    elif subcmd == "collect":
+        orchestrator = get_orchestrator()
+        result = orchestrator.collect_results()
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(f"\n📥 Collected: {result['collected']} results")
+            print(f"🔄 Still running: {result['still_running']}")
+            if result.get("merged_result"):
+                mr = result["merged_result"]
+                if mr.get("has_conflicts"):
+                    print(f"⚠️  Conflicts detected: {len(mr.get('conflicts', []))}")
+                print(f"📝 Files changed: {', '.join(mr.get('files_changed', []))}")
+
+    elif subcmd == "kill":
+        orchestrator = get_orchestrator()
+        result = orchestrator.kill_all_sessions()
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            print(formatter.format_message(f"Killed {result['killed']} sessions", "success"))
+
+    elif subcmd == "analyze":
+        result = qm.analyze_conflict(args.task_a, args.task_b)
+        if args.format == "json":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            if "error" in result:
+                print(formatter.format_message(result["error"], "error"))
+            else:
+                level_emoji = {"NONE": "✅", "SOFT": "⚠️", "HARD": "🛑"}
+                emoji = level_emoji.get(result["conflict_level"], "❓")
+                print(f"\n{emoji} Conflict Analysis")
+                print(f"  Tasks: {result['task_a']} ↔ {result['task_b']}")
+                print(f"  Level: {result['conflict_level']}")
+                print(f"  {result['description']}")
+
+    else:
+        print("Usage: cq parallel [plan|spawn|list|collect|kill|analyze]")
+        sys.exit(1)
+
+
+def cmd_analyze(args):
+    """Analyze tasks for dependencies and parallel execution"""
+    formatter = get_formatter(args.format)
+
+    # Get TaskAnalyzer
+    try:
+        from task_analyzer import TaskAnalyzer
+        analyzer = TaskAnalyzer()
+    except ImportError as e:
+        print(f"Error: Could not import task_analyzer: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    tasks = []
+
+    # Determine input source
+    if args.queue:
+        # Analyze current queue
+        result = analyzer.analyze_queue()
+        if not result.tasks:
+            print(formatter.format_message("Queue is empty", "info"))
+            return
+    elif args.file:
+        # Load from file
+        try:
+            tasks = analyzer.load_from_file(args.file)
+        except FileNotFoundError:
+            print(formatter.format_message(f"File not found: {args.file}", "error"))
+            sys.exit(1)
+        except Exception as e:
+            print(formatter.format_message(f"Error reading file: {e}", "error"))
+            sys.exit(1)
+        result = analyzer.analyze(tasks, execute=args.execute, auto=args.auto)
+    elif args.tasks:
+        # Parse task string
+        tasks = analyzer.parse_task_string(args.tasks)
+        result = analyzer.analyze(tasks, execute=args.execute, auto=args.auto)
+    else:
+        print(formatter.format_message("No tasks specified. Use --queue, --file, or provide tasks.", "error"))
+        print("Usage: cq analyze \"task1, task2, task3\"")
+        print("       cq analyze --queue")
+        print("       cq analyze --file tasks.md")
+        sys.exit(1)
+
+    # Output result
+    if args.format == "json":
+        print(result.to_json())
+    else:
+        print(result.to_pretty())
+
+        # Execution status
+        if result.auto_executed:
+            print(formatter.format_message("Tasks queued automatically (--auto)", "success"))
+        elif result.executed:
+            print(formatter.format_message("Tasks queued for execution", "success"))
+        elif not args.execute and not args.auto:
+            print("\n💡 To execute: cq analyze --queue --execute")
+            print("💡 For full auto: cq analyze --queue --auto")
+
+
+def main():
+    """Main entry point"""
+    args = parse_args()
+
+    commands = {
+        "status": cmd_status,
+        "list": cmd_list,
+        "add": cmd_add,
+        "next": cmd_next,
+        "cancel": cmd_cancel,
+        "move": cmd_move,
+        "parallel": cmd_parallel,
+        "analyze": cmd_analyze,
+    }
+
+    cmd_func = commands.get(args.command)
+    if cmd_func:
+        try:
+            cmd_func(args)
+        except Exception as e:
+            if args.verbose:
+                raise
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print(f"Unknown command: {args.command}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
