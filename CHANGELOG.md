@@ -11,7 +11,8 @@ All notable changes to the SuperClaude Config Installer will be documented in th
 - Agent tracking via `.superclaude-agents-installed` version file
 - `get_agent_files()`, `get_agents_installed()`, `save_agents_installed()`, `remove_agents_installed_flag()` utility functions
 - Agent source file validation tests (frontmatter, existence, non-empty)
-- 27 new tests (129 total) covering agent install/uninstall flows
+- E2E tests for install.sh shell wrapper (subprocess-based, fake HOME)
+- 58 new tests (168 total) covering agent flows, frontmatter validation, and shell E2E
 
 ### Changed
 - TDD agent paths (`agents/tdd-coach.md`, etc.) now protected conditionally — only when not installed by this tool

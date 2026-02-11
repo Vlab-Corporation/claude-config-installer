@@ -101,7 +101,10 @@ When `~/.claude/settings.json` already exists, the installer performs a deep mer
 
 ```bash
 pip install pytest
-pytest tests/ -v
+pytest tests/ -v              # All 168 tests
+pytest tests/unit/ -v         # Unit tests only
+pytest tests/integration/ -v  # Integration tests only
+pytest tests/e2e/ -v          # E2E tests (install.sh subprocess)
 ```
 
 ## License
