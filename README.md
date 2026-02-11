@@ -23,7 +23,9 @@ python3 install.py --verbose          # Install with detailed output
 python3 install.py --dry-run          # Preview changes without modifying files
 python3 install.py --preserve-agents  # Install without overwriting agents/
 python3 install.py --list-files       # Show all managed files
-python3 install.py --uninstall        # Remove SuperClaude files
+python3 install.py --uninstall        # Remove SuperClaude files (preserves user settings)
+python3 install.py --uninstall --preserve-agents  # Uninstall but keep agents/
+python3 install.py --uninstall --clean-all  # Remove everything including backups
 python3 install.py --uninstall --dry-run  # Preview uninstall
 python3 install.py --check-update     # Check for newer version
 python3 install.py --version          # Show version

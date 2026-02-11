@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __version_info__ = tuple(int(x) for x in __version__.split("."))
 
 # Metadata
@@ -189,6 +189,20 @@ VERSION_MIGRATIONS: Dict[str, Dict[str, Any]] = {
             "Initial release with 106 SuperClaude framework files",
         ],
     },
+    "1.1.0": {
+        "description": "Improved uninstall with settings unmerge, backup, and cleanup",
+        "install_files": {},
+        "executable_files": [],
+        "runtime_dirs": [],
+        "legacy_files": [],
+        "changes": [
+            "Add unmerge_settings() to reverse settings.json merge on uninstall",
+            "Create backup before uninstall with superclaude_uninstall_ prefix",
+            "Honor --preserve-agents flag during uninstall",
+            "Add runtime directory cleanup on uninstall",
+            "Add --clean-all flag for complete removal including backups",
+        ],
+    },
 }
 
 
@@ -219,13 +233,20 @@ def get_current_install_files() -> Dict[str, str]:
     """
     Get the install file mapping for the current version.
 
+    Accumulates install_files from all versions up to and including the current
+    version. Later versions can override earlier entries for the same source path.
+
     This is the Single Source of Truth (SSOT) for what files should be installed.
 
     Returns:
-        Dict mapping source paths to destination paths for current version
+        Dict mapping source paths to destination paths
     """
-    current_migration = VERSION_MIGRATIONS.get(__version__, {})
-    return current_migration.get("install_files", {})
+    all_files: Dict[str, str] = {}
+    for version in sorted(VERSION_MIGRATIONS.keys(), key=lambda v: tuple(int(x) for x in v.split("."))):
+        v_tuple = tuple(int(x) for x in version.split("."))
+        if v_tuple <= __version_info__:
+            all_files.update(VERSION_MIGRATIONS[version].get("install_files", {}))
+    return all_files
 
 
 def get_all_historical_files() -> List[str]:
@@ -262,22 +283,38 @@ def get_executable_files() -> List[str]:
     """
     Get list of files that need executable permissions.
 
+    Accumulates executable_files from all versions up to current.
+
     Returns:
         List of destination paths that need chmod +x
     """
-    current_migration = VERSION_MIGRATIONS.get(__version__, {})
-    return current_migration.get("executable_files", [])
+    result: List[str] = []
+    for version in sorted(VERSION_MIGRATIONS.keys(), key=lambda v: tuple(int(x) for x in v.split("."))):
+        v_tuple = tuple(int(x) for x in version.split("."))
+        if v_tuple <= __version_info__:
+            for f in VERSION_MIGRATIONS[version].get("executable_files", []):
+                if f not in result:
+                    result.append(f)
+    return result
 
 
 def get_runtime_dirs() -> List[str]:
     """
     Get list of runtime directories to create during installation.
 
+    Accumulates runtime_dirs from all versions up to current.
+
     Returns:
         List of directory paths relative to CLAUDE_DIR
     """
-    current_migration = VERSION_MIGRATIONS.get(__version__, {})
-    return current_migration.get("runtime_dirs", [])
+    result: List[str] = []
+    for version in sorted(VERSION_MIGRATIONS.keys(), key=lambda v: tuple(int(x) for x in v.split("."))):
+        v_tuple = tuple(int(x) for x in version.split("."))
+        if v_tuple <= __version_info__:
+            for d in VERSION_MIGRATIONS[version].get("runtime_dirs", []):
+                if d not in result:
+                    result.append(d)
+    return result
 
 
 # =============================================================================

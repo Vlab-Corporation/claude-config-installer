@@ -1,6 +1,6 @@
 [project]
 name = "claude-config-installer"
-version = "1.0.0"
+version = "1.1.0"
 description = "Installs SuperClaude framework configuration to ~/.claude/"
 requires-python = ">=3.6"
 
